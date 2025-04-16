@@ -1,0 +1,83 @@
+version: "3.8"
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    networks:
+      - big-data-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_BROKER_ID: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 300000
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    networks:
+      - big-data-network
+
+  pyspark:
+    build:
+      context: ..
+      dockerfile: ./docker/pyspark/Dockerfile  # Correct path to the Dockerfile
+    container_name: pyspark
+    depends_on:
+      - kafka
+    environment:
+      SPARK_MASTER: "local[*]"
+      GOOGLE_APPLICATION_CREDENTIALS: "/app/keys/traffic-management-454100-b0e47d8fa462.json"
+    volumes:
+      - ../src:/home/jovyan/work
+      - ../data:/app/data  # Ensure raw and processed data are mounted
+      - ../data/processed:/app/data/processed  # Ensure processed folder is mounted
+      - ../keys:/app/keys 
+    networks:
+      - big-data-network
+    ports:
+      - "4040:4040"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:4040 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2g  # Allocate 2GB memory
+          cpus: "1.0"  # Allocate 1 CPU
+
+  jupyter:
+    image: jupyter/pyspark-notebook
+    container_name: jupyter
+    ports:
+      - "8888:8888"
+    depends_on:
+      - pyspark
+    volumes:
+      - ../notebooks:/home/jovyan/work
+    networks:
+      - big-data-network
+    environment:
+      - SPARK_HOME=/usr/local/spark
+
+networks:
+  big-data-network:
+    driver: bridge
