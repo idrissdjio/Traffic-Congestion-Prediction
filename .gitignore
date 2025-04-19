@@ -1,0 +1,44 @@
+# Byte‑compiled / optimized Python files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+env/
+venv/
+.venv/
+ENV/
+VENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# IDE settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Logs
+*.log
+
+# Data outputs
+*.csv
+traffic_raw_*.csv
+traffic_processed_*.csv
+
+# Kafka offsets / state (if any local files)
+*.offsets
+
+# dotenv environment files
+.env
+.env.*
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
