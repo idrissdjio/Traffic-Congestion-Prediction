@@ -12,6 +12,8 @@ from confluent_kafka import Consumer, KafkaError
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report
 
 # ---- Configuration ----
 BATCH_SIZE = 500
@@ -53,11 +55,14 @@ def save_to_csv(df: pd.DataFrame, path: str):
 
 def process_batch_python(batch: list[dict],
                          processed_csv: str,
-                         weights_csv: str):
+                         weights_csv: str,
+                         metrics_csv: str):
     """
     1) KMeans → df['Cluster_Label'], df['Congestion_Level']
-    2) RF ← predict Cluster_Label from features
-    3) dump enriched df + feature_importances
+    2) split → train/test
+    3) RF fit on train
+    4) evaluate on test → accuracy & macro-F1 → append to metrics_csv
+    5) dump enriched df + feature_importances
     """
     try:
         df = pd.DataFrame(batch)
@@ -78,15 +83,36 @@ def process_batch_python(batch: list[dict],
         mapping = { order[0]: "High", order[1]: "Medium", order[2]: "Low" }
         df["Congestion_Level"] = df["Cluster_Label"].map(mapping)
 
-        # Save enriched batch
+        # 2) Split for RF evaluation
+        X_train, X_test, y_train, y_test = train_test_split(
+            Xs, labels, test_size=0.2, random_state=42
+        )
+
+        # 3) Train RF
+        rf = RandomForestClassifier(n_estimators=100,
+                                    oob_score=False,
+                                    random_state=42)
+        rf.fit(X_train, y_train)
+
+        # 4) Evaluate
+        y_pred = rf.predict(X_test)
+        acc    = accuracy_score(y_test, y_pred)
+        cr     = classification_report(y_test, y_pred, output_dict=True)
+        macro_f1 = cr["macro avg"]["f1-score"]
+
+        metrics_df = pd.DataFrame([{
+            "batch_time": datetime.now().isoformat(),
+            "accuracy": acc,
+            "macro_f1": macro_f1
+        }])
+        save_to_csv(metrics_df, metrics_csv)
+        logger.info(f"→ RF Accuracy: {acc:.3f}, Macro‑F1: {macro_f1:.3f}")
+
+        # 5) Save enriched batch
         save_to_csv(df, processed_csv)
         logger.info(f"→ Saved {len(df)} records to {processed_csv}")
 
-        # 2) RF on cluster labels
-        rf = RandomForestClassifier(n_estimators=100, random_state=42)
-        rf.fit(Xs, labels)
-
-        # 3) Feature importances
+        # 6) Feature importances
         imp_df = pd.DataFrame({
             "feature": feat_cols,
             "importance": rf.feature_importances_
@@ -102,6 +128,7 @@ def process_message(msg: dict,
                     raw_csv: str,
                     processed_csv: str,
                     weights_csv: str,
+                    metrics_csv: str,
                     buffer: list):
     try:
         # normalize NaNs
@@ -109,19 +136,19 @@ def process_message(msg: dict,
             if isinstance(v, float) and pd.isna(v):
                 msg[k] = None
 
-        # 1) save raw
+        # save raw
         save_to_csv(pd.DataFrame([msg]), raw_csv)
 
-        # 2) buffer
+        # buffer
         buffer.append(msg)
         logger.debug(f"Buffered {len(buffer)}/{BATCH_SIZE}")
 
-        # 3) once full, run batch
         if len(buffer) >= BATCH_SIZE:
             logger.info("Batch full → running batch processing")
             process_batch_python(buffer.copy(),
                                  processed_csv,
-                                 weights_csv)
+                                 weights_csv,
+                                 metrics_csv)
             buffer.clear()
 
         return True
@@ -142,6 +169,7 @@ def main():
     raw_csv       = create_new_csv_file("traffic_raw",       RAW_DIR)
     processed_csv = create_new_csv_file("traffic_processed", PROCESSED_DIR)
     weights_csv   = create_new_csv_file("rf_weights",        PROCESSED_DIR)
+    metrics_csv   = create_new_csv_file("rf_metrics",        PROCESSED_DIR)
 
     pending = []
     consumer = Consumer(KAFKA_CONFIG)
@@ -165,7 +193,12 @@ def main():
                 logger.error(f"JSON decode failed: {e}")
                 continue
 
-            if process_message(rec, raw_csv, processed_csv, weights_csv, pending):
+            if process_message(rec,
+                               raw_csv,
+                               processed_csv,
+                               weights_csv,
+                               metrics_csv,
+                               pending):
                 consumer.commit(m)
 
     except Exception as e:
@@ -174,7 +207,10 @@ def main():
         # final flush
         if pending:
             try:
-                process_batch_python(pending, processed_csv, weights_csv)
+                process_batch_python(pending,
+                                     processed_csv,
+                                     weights_csv,
+                                     metrics_csv)
             except Exception as e:
                 logger.error(f"Final batch error: {e}")
         consumer.close()
