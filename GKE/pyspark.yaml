@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pyspark
+spec:
+  ports:
+  - port: 4040
+    name: ui
+  selector:
+    app: pyspark
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pyspark
+  namespace: traffic-data
+spec:
+  selector:
+    matchLabels:
+      app: pyspark
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: pyspark
+    spec:
+      containers:
+      - name: pyspark
+        image: gcr.io/kafka-bda/pyspark-new:latest
+        ports:
+        - containerPort: 4040
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          pip install google-cloud-storage
+          python /app/src/streaming_processing/kafka_consumer.py
+        resources:
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        envFrom:
+        - configMapRef:
+            name: kafka-config
+        env:
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: "/app/keys/credentials.json"
+        volumeMounts:
+        - name: gcp-creds
+          mountPath: /app/keys
+          readOnly: true
+      volumes:
+      - name: gcp-creds
+        secret:
+          secretName: gcp-credentials
+          items:
+          - key: credentials.json
+            path: credentials.json
